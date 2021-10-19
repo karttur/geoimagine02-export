@@ -9,10 +9,13 @@ import os
 import numpy as np
 
 import subprocess
-from _ast import If
+
+from geoimagine.layout import ProcessLayout
+
+import geoimagine.support.karttur_dt as mj_dt
 
 class ProcessExport():
-    'class for modis specific processing' 
+    '''class for modis specific processing'''
       
     def __init__(self, pp, session):
         '''
@@ -28,8 +31,28 @@ class ProcessExport():
         
         print ('        ProcessExport', self.pp.process.processid) 
         
+        if self.pp.process.parameters.asscript:
+            
+            today = mj_dt.Today()
+            
+            scriptFP = os.path.join('/Volumes',self.pp.dstPath.volume, self.pp.procsys.dstsystem, 'export-pilot')
+            
+            if not os.path.exists(scriptFP):
+                
+                os.makedirs(scriptFP)
+                
+            scriptFN = 'export-pilot_%(today)s.sh' %{'today':today}
+            
+            scriptFPN = os.path.join(scriptFP,scriptFN)
+            
+            self.pilotScriptF = open(scriptFPN,'a+')
+            
+            writeln = '# Pilot script created by Kartturs GeoImagine Framework for Export processing, created %s\n' %(today)
+    
+            self.pilotScriptF.write(writeln)
+            
         #direct to subprocess
-                    
+                  
         if 'movieclock' in self.pp.process.processid.lower():
             
             self._MovieClock()
@@ -73,10 +96,44 @@ class ProcessExport():
         
         print (printstr)
         
+        if self.pp.process.parameters.asscript:
+            
+            self.pilotScriptF.close()
+            
+            infostr = 'Run the pilot script file:\n    %s' %(scriptFPN)
+            
+            print (infostr)
+        
         
     def _LoopAllLayers(self):
         '''
         '''
+        
+        if self.pp.process.parameters.asscript:
+            
+            today = mj_dt.Today()
+            
+            scriptFP = os.path.join('/Volumes',self.pp.dstPath.volume, self.pp.procsys.dstsystem, self.pp.dstCompD[self.pp.dstCompL[0]].source,'export')
+            
+            if not os.path.exists(scriptFP):
+                
+                os.makedirs(scriptFP)
+                
+            scriptFN = 'export_%(compid)s-%(today)s.sh' %{'compid':self.pp.dstCompD[self.pp.dstCompL[0]].compid, 'today':today}
+            
+            scriptFPN = os.path.join(scriptFP,scriptFN)
+            
+            self.exportScriptF = open(scriptFPN,'w')
+            
+            writeln = '# Script created by Kartturs GeoImagine Framework for Export processing, created %s\n' %(today)
+    
+            self.exportScriptF.write(writeln)
+            
+            cmd = 'chmod 755 %s\n%s\n' %(scriptFPN, scriptFPN)
+            
+            self.pilotScriptF.write(cmd)
+                    
+        
         for locus in self.pp.srcLayerD:
             
             for datum in self.pp.srcPeriod.datumL:
@@ -93,9 +150,14 @@ class ProcessExport():
                         
                         continue
                     
-                    if 'archive' in self.pp.process.processid.lower():
+                                        
+                    if 'ziparchive' in self.pp.process.processid.lower():
                         
                         self._ArchiveIni(locus,datum,comp)
+                        
+                    elif 'duplicate' in self.pp.process.processid.lower():
+                        
+                        self._DuplicateIni(locus,datum,comp)
                         
                     elif self.pp.process.processid.lower() == 'exporttilestobyte':
                         
@@ -104,6 +166,10 @@ class ProcessExport():
                     elif self.pp.process.processid.lower() == 'exportshadedtilestobyte':
                         
                         self._ExportShadedToByte(locus,datum,comp)
+                        
+                    
+                        
+                        
                         
                     elif not self.pp.dstLayerD[locus][datum][comp]._Exists() or self.pp.process.overwrite:
                         
@@ -131,6 +197,16 @@ class ProcessExport():
                             
                             exitstr = 'EXITING - unrecognize export command in ProcessExport: %s' %(self.pp.process.processid)
            
+                            exit(exitstr)
+           
+        if self.pp.process.parameters.asscript:
+            
+            self.exportScriptF.close()
+            
+            infostr = 'To render the commands, run the script file:\n    %s' %(scriptFPN)
+            
+            print (infostr)
+            
     def _ExportToByte(self,locus,datum,comp):
         '''
         '''
@@ -153,9 +229,9 @@ class ProcessExport():
   
         # Create shading if not already done
           
-        if not self.pp.dstLayerD[locus]['0']['shade']._Exists() or self.pp.process.overwrite:
+        if not self.pp.dstLayerD[locus]['0']['shade']._Exists() or self.pp.process.overwriteshade:
                     
-            print ('        Creating shading for location %s' %(locus) )
+            print ('        Creating shading for location %s\n        %s' %(locus, self.pp.dstLayerD[locus]['0']['shade'].FPN) )
                                 
             self._SelectScaling('shade')
             
@@ -163,7 +239,9 @@ class ProcessExport():
             
             self._ExportLayer(locus,'0','shade')
             
-        self._ShadeMagickLayout(locus, datum, comp)
+            self.pp.process.overwriteshade = False
+            
+            self._ShadeMagickLayout(locus, datum, comp)
         
         if comp == 'shade':
             
@@ -180,7 +258,7 @@ class ProcessExport():
         if not self.pp.dstLayerD[locus][datum][comp]._Exists() or self.pp.process.overwrite:
             
             self._ExportLayer(locus,datum,comp)
-                        
+                                    
         self._CreateShadedLayout(locus, datum, comp)
                                                        
     def _ExportMap(self,locus,datum,comp):
@@ -238,6 +316,8 @@ class ProcessExport():
         '''
         '''
         
+        self.legendFPN = False
+        
         #Open the src layer
         self.pp.srcLayerD[locus][datum][comp].RasterOpenGetFirstLayer()
         
@@ -283,23 +363,27 @@ class ProcessExport():
             
             if self.pp.process.parameters.minmax:
                 
-                self.scaling.power = 0
+                self.scaling.log = self.scaling.power = 0 
                 
                 if self.pp.process.parameters.srcmin == self.pp.process.parameters.srcmax:
                 
                     srcmin = np.amin(srcBAND)
                     
                     srcmax = np.amax(srcBAND)
-                      
+                                          
                 else:
                     
                     srcmin = self.pp.process.parameters.srcmin
                     
                     srcmax = self.pp.process.parameters.srcmax
                                         
-                scalefac = 1/((srcmax-srcmin)/250)
+                scalefac = 1.0/((srcmax-srcmin)/250.0)
                     
                 offsetadd = srcmin*scalefac
+                
+                if self.pp.process.parameters.detaillegend:
+                    
+                    self._CreateLegend(srcmin,srcmax,scalefac,offsetadd,locus,comp)
                     
             else:
                 
@@ -331,6 +415,17 @@ class ProcessExport():
                     dstBAND = np.copy(dstBANDIni)
                     #dstBAND[MASK] = dstBANDInv[MASK]
                     dstBAND += offsetadd
+                    
+            elif self.scaling.log:
+                # natural logarithm             
+                BAND = srcBAND
+                
+                dstBAND = np.log(BAND)
+                
+                dstBAND *=  scalefac
+                   
+                dstBAND += offsetadd
+                    
             elif self.scaling.mirror0 or self.scaling.offsetadd == 125: 
                 
                 dstBAND =  srcBAND * scalefac
@@ -405,6 +500,123 @@ class ProcessExport():
             
         return '\( -background %(bkgcolor)s -bordercolor %(bkgcolor)s -font %(font)s -pointsize %(size)d -fill "%(fill)s" -gravity %(gravity)s %(mode)s:"%(title)s" -virtual-pixel background -distort SRT "0.8 0" -virtual-pixel none -distort SRT "0.8 0" \) -composite ' %titleD
     
+    def _LayoutLegend(self,locus,datum,comp):
+        
+        if self.legendFPN:
+            
+            legendFPN = self.legendFPN
+            
+        else:
+                
+            compid = self.pp.dstLayerD[locus][datum][comp].comp.compid
+            
+            legendFP = os.path.join('/Volumes',self.pp.process.dstpath.volume,'legends','svg')
+            
+            
+            
+            legendFN = '%s_%s.png' %(compid, self.pp.process.parameters.palette)
+            
+            legendFPN = os.path.join(legendFP,legendFN)
+        
+        if not os.path.exists(legendFPN):
+            
+            infostr = 'WARNING legend %s not found, skipping legend' %(legendFPN)
+            
+            print (infostr)
+            
+            return False
+        
+        legendD = {'bkgcolor':self.pp.process.parameters.detaillegendbackground,  
+                   'legendFPN':legendFPN, 'gravity':self.pp.process.parameters.detaillegendgravity}
+            
+        return '\( -background %(bkgcolor)s -gravity %(gravity)s %(legendFPN)s \) -composite ' %legendD
+
+
+    def _CreateLegend(self,srcmin,srcmax,scalefac,offsetadd,locus,comp):
+        '''
+        '''
+
+        # Get the legend entries for the selected palette
+        
+        layout = ProcessLayout(self.pp, self.session)
+        
+        layout.scaling = lambda:None
+        
+        layout.scaling.offsetadd = -offsetadd
+        
+        layout.scaling.scalefac = 1.0/scalefac
+        
+        layout.scaling.power = layout.scaling.log = 0
+        
+        layout.imgD = {}
+        
+        #Export each composition (if several)
+        # Convert the parameters to a dict 
+        #queryD = dict( list( self.pp.process.parameters.__dict__.items() ) )
+        
+        #for comp in self.pp.srcCompD:
+            
+        compD = dict( list( self.pp.dstCompD[comp].__dict__.items() ) )
+            
+        layout.compid = compD['compid']
+                        
+        #Create the target paths
+        layout.pngFP = os.path.join('/Volumes',self.pp.process.dstpath.volume,'legendsauto',locus,'png')
+            
+        layout.pdfFP = os.path.join('/Volumes',self.pp.process.dstpath.volume,'legendsauto',locus,'pdf')
+            
+        layout.svgFP = os.path.join('/Volumes',self.pp.process.dstpath.volume,'legendsauto',locus,'svg')
+            
+        if not os.path.exists(layout.pngFP):
+                
+            os.makedirs(layout.pngFP)
+                
+        if not os.path.exists(layout.pdfFP):
+                
+            os.makedirs(layout.pdfFP)
+                
+        if not os.path.exists(layout.svgFP):
+                
+            os.makedirs(layout.svgFP)
+                
+        # Set the filenames  
+        layout.svgFN = '%s_%s.svg' %(layout.compid, self.pp.process.parameters.palette)
+            
+        layout.svgFPN = os.path.join(layout.svgFP,layout.svgFN)
+            
+        self.legendFPN = layout.pngFPN = layout.svgFPN.replace('.svg','.png')
+            
+        layout.jpgFPN = layout.svgFPN.replace('.svg','.jpg')
+            
+        if not self.pp.process.overwrite:
+            
+            if os.path.exists(layout.svgFPN) and os.path.exists(layout.pngFPN):
+                    
+                if not self.pp.process.parameters.jpg or os.path.exists(self.jpgFPN):
+                        
+                    return
+                
+        #Get the measure (i.e. O,R,I)
+        layout._SelectCompFormat()
+            
+        #Get the scaling
+        #self._SelectScaling(comp)
+            
+        #Get the legend
+        layout._SelectLegend(comp)
+            
+        #Get the palette
+        layout._SelectPaletteColors()
+                    
+        #Set the legend dimensions
+        layout._SetLegendDim()
+
+        layout._CreateFramesOIR()
+            
+        layout._WriteLegendImgs()
+                                     
+        layout._ConstructSVG()
+          
     def _CreateMainLayout(self,locus,datum,comp):
         '''
         '''
@@ -461,6 +673,14 @@ class ProcessExport():
                     
                 embdimL = False
                 
+            if self.pp.process.parameters.detaillegend:
+                
+                legend = self._LayoutLegend(locus,datum,comp)
+                
+            else:
+                
+                legend = False
+                
             if hasattr(self.pp.process.parameters, 'title') and self.pp.process.parameters.title:
                 
                 title = self._LayoutTitle(locus,datum,comp)
@@ -469,7 +689,7 @@ class ProcessExport():
                 
                 title = False
                 
-            self._MagickPng(FPN, pngFPN, cropL, width, border, bordercolor, overlay, emboss, embdimL, embossptsize, title)
+            self._MagickPng(FPN, pngFPN, cropL, width, border, bordercolor, overlay, emboss, embdimL, embossptsize, title, legend)
 
         if self.pp.process.parameters.jpg:
         
@@ -516,19 +736,19 @@ class ProcessExport():
         
         paramsD['alphashade'] = self.pp.process.parameters.alphashade
         
-        #paramsD['fuzzalpha'] = self.pp.process.parameters.fuzzalpha
+        paramsD['fuzzalpha'] = self.pp.process.parameters.fuzzalpha
         
         #paramsD['doubleshade'] = self.pp.process.parameters.doubleshadow
         
         #paramsD['bumpshade'] = self.pp.process.parameters.bump
         
-        paramsD['fuzzalpha'] = 10
+
         
-        paramsD['doubleshade'] = True
+
         
-        paramsD['bumpshade'] = False
+ 
         
-        if paramsD['doubleshade']:
+        if self.pp.process.parameters.shadefactor > 1:
             
             shdFPN = dblFPN
         
@@ -582,7 +802,7 @@ class ProcessExport():
         
         subprocess.call('/usr/local/bin/' + magickCmd, shell=True)
         
-        if paramsD['doubleshade']:
+        if self.pp.process.parameters.shadefactor > 1:
             
             # Increase shadow
             
@@ -592,10 +812,28 @@ class ProcessExport():
             
                 print ('        ',magickCmd)
                 
-            subprocess.call('/usr/local/bin/' + magickCmd, shell=True) 
+            subprocess.call('/usr/local/bin/' + magickCmd, shell=True)
+            
+            factor = 2
+                
+            while True:
+                
+                if factor >= self.pp.process.parameters.shadefactor:
+                    
+                    break
+                    
+                magickCmd = 'composite -compose Multiply %(dbl)s %(ini)s %(dbl)s' %paramsD
+                
+                if self.verbose > 1:
+                
+                    print ('        ',magickCmd)
+
+                subprocess.call('/usr/local/bin/' + magickCmd, shell=True) 
+                
+                factor *= 2
              
         # Whitening
-        
+ 
         magickCmd = 'convert \( -size "%(w)d x %(h)d" canvas:none  -fill "#c0c0c0" -draw "rectangle 0,0,%(w)d,%(h)d" \) ' %paramsD
         
         magickCmd += '%(shd)s -compose Divide -composite %(wht)s' %paramsD  
@@ -676,6 +914,15 @@ class ProcessExport():
                     
                 embdimL = False
                 
+                
+            if self.pp.process.parameters.detaillegend:
+                
+                legend = self._LayoutLegend(locus,datum,comp)
+                
+            else:
+                
+                legend = False
+                
             if hasattr(self.pp.process.parameters, 'title') and self.pp.process.parameters.title:
                 
                 title = self._LayoutTitle(locus,datum,comp)
@@ -686,7 +933,7 @@ class ProcessExport():
                 
             alpha = int(self.pp.process.parameters.alphashade*100)
    
-            self._MagickPng(FPN, pngFPN, cropL, width, border, bordercolor, overlay, emboss, embdimL, embossptsize, title, alpha )
+            self._MagickPng(FPN, pngFPN, cropL, width, border, bordercolor, overlay, emboss, embdimL, embossptsize, title, legend, alpha )
 
         if self.pp.process.parameters.jpg:
         
@@ -695,6 +942,8 @@ class ProcessExport():
             if not os.path.exists(jpgFPN) or self.pp.process.overwrite: 
                 
                 self._MagickPngToJpg(pngFPN, jpgFPN, self.pp.process.parameters.jpg)
+             
+             
                                         
     def _CreateDetailLayout(self,locus,datum,comp,pngMainFPN):
         '''
@@ -759,7 +1008,7 @@ class ProcessExport():
                 
                 title = False
                 
-            self._MagickPng(cropL, width, border, bordercolor, overlay, emboss, embdimL, embossptsize, title)
+            self._MagickPng(cropL, width, border, bordercolor, overlay, emboss, embdimL, embossptsize, legend, title)
 
         if self.pp.process.parameters.jpg:
         
@@ -769,7 +1018,7 @@ class ProcessExport():
                 
                 self._MagickPngToJpg(pngFPN, jpgFPN, self.pp.process.parameters.jpg)       
             
-    def _MagickPng(self, srcFPN, dstFPN, cropL, width, border, bordercolor, overlay, emboss, embdimL, embossptsize, title, alphashade=0):
+    def _MagickPng(self, srcFPN, dstFPN, cropL, width, border, bordercolor, overlay, emboss, embdimL, embossptsize, title, legend, alphashade=0):
         '''ImageMagick command for writing png
         '''
 
@@ -849,6 +1098,10 @@ class ProcessExport():
                          
             magickCmd += title
             
+        if legend:
+            
+            magickCmd += legend
+            
         if border:
             
             paramsD['b'] = border
@@ -862,7 +1115,7 @@ class ProcessExport():
         if self.verbose > 1:
             
             print ('        ',magickCmd)
-
+            
         subprocess.call('/usr/local/bin/' + magickCmd, shell=True)
         
     def _MagickPngToJpg(self, pngFPN, jpgFPN, jpgquality):
@@ -890,25 +1143,89 @@ class ProcessExport():
             cropL = False
             
         return (cropL)
+    
+    
+    def _DuplicateIni(self,locus,datum,comp):
+        '''
+        '''
+
+        if not self.pp.dstLayerD[locus][datum][comp]._Exists() or self.pp.process.overwrite:
+            
+            if self.verbose:
+            
+                infostr = '        Duplicating %s to\n            %s' %(self.pp.srcLayerD[locus][datum][comp].FPN,self.pp.dstLayerD[locus][datum][comp].FPN)
+                
+                print (infostr)
+            
+            cmd = 'cp %(src)s %(dst)s' %{'src':self.pp.srcLayerD[locus][datum][comp].FPN,
+                                            'dst':self.pp.dstLayerD[locus][datum][comp].FPN}  
+                    
+            if self.pp.process.parameters.asscript:
+                
+                cmd += '\n'
                    
+                self.exportScriptF.write(cmd)  
+                
+            else:        
+            
+                os.system(cmd)
+            
     def _ArchiveIni(self,locus,datum,comp):
         '''
         '''
 
-        if not self.pp.dstLayerD[locus][datum][comp]._Exists() or self.process.overwrite:
+        if not self.pp.dstLayerD[locus][datum][comp]._Exists() or self.pp.process.overwrite:
             
-            if self.pp.process.parameters.archive == 'zip':
+            if self.verbose:
+            
+                infostr = '        Archiving %s to\n            %s' %(self.pp.srcLayerD[locus][datum][comp].FPN,self.pp.dstLayerD[locus][datum][comp].FPN)
+                
+                print (infostr)
+            
+            if self.pp.dstLayerD[locus][datum][comp].comp.ext == '.zip':
                 
                 self._ArchiveZip(locus,datum,comp)
             
-            elif self.pp.process.parameters.archive == 'gz':
+            elif self.pp.dstLayerD[locus][datum][comp].comp.ext == '.gz':
             
                 self._archiveGunZip(locus,datum,comp)
             
-            elif self.pp.process.parameters.archive == 'tar':
+            elif self.pp.dstLayerD[locus][datum][comp].comp.ext == '.tar':
             
                 self._archiveTar(locus,datum,comp)
             
-            elif self.pp.process.parameters.archive == 'gz.tar':
+            elif self.pp.dstLayerD[locus][datum][comp].comp.ext == '.gz.tar':
             
                 self._archiveGunZipTar(locus,datum,comp)
+                
+            elif self.pp.dstLayerD[locus][datum][comp].comp.ext == '.tar.gz':
+            
+                self._archiveTarGunZip(locus,datum,comp)
+                
+            else:
+                
+                print (self.pp.dstLayerD[locus][datum][comp].comp.ext)
+                
+                NOTYETDNE
+                
+    def _archiveTarGunZip(self,locus,datum,comp):
+        '''
+        '''
+        
+        cmd = 'cd %(srcfp)s; '%{'srcfp':self.pp.srcLayerD[locus][datum][comp].FP}
+        
+        cmd += 'tar -cvzf %(dst)s %(src)s; '  %{'src':self.pp.srcLayerD[locus][datum][comp].FN,
+                                            'dst':self.pp.dstLayerD[locus][datum][comp].FN}
+        
+        cmd+= 'mv %(fn)s %(fpn)s' %{'fn':self.pp.dstLayerD[locus][datum][comp].FN,
+                                            'fpn':self.pp.dstLayerD[locus][datum][comp].FPN}  
+        
+        if self.pp.process.parameters.asscript:
+            
+            cmd += '\n'
+               
+            self.exportScriptF.write(cmd)  
+            
+        else:        
+        
+            os.system(cmd)
